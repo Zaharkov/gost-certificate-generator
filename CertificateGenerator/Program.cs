@@ -30,8 +30,8 @@ namespace CertificateGenerator
 
         public static void Main()
         {
-            var bouncyCastleCertificate = GenerateBouncyCastleCertificate();
-            SaveCertificate(bouncyCastleCertificate);
+            var certificate = GenerateBouncyCastleCertificate();
+            SaveCertificate(certificate);
 
             var data = "Mary have nuclear bomb";
             var signature = Sign(data); // 64 byte
@@ -168,10 +168,29 @@ namespace CertificateGenerator
         {
             var encodedCertificate = certificate.GetRawCertData();
             var certificateInBase64 = Convert.ToBase64String(encodedCertificate);
+
+            /*
+             * you can check cert data here - https://lapo.it/asn1js
+             * just copy+paste certificateInBase64 string
+             */
+
             var cmsData = new StringBuilder();
             cmsData.Append("-----BEGIN CMS-----");
-            cmsData.Append(certificateInBase64);
+            cmsData.Append("\\n");
+
+            var certLength = certificateInBase64.Length;
+            for (var i = 0; i < certLength; i += 64)
+            {
+                var substr = certLength - i >= 64
+                    ? certificateInBase64.Substring(i, 64)
+                    : certificateInBase64.Substring(i);
+
+                cmsData.Append(substr);
+                cmsData.Append("\\n");
+            }
+
             cmsData.Append("-----END CMS-----");
+            cmsData.Append("\\n");
             var cmsString = cmsData.ToString(); //add to http request in bank for approving you certificate
 
             File.WriteAllText(@"certificate.cms", cmsString);
