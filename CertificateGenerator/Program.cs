@@ -8,6 +8,7 @@ using System.Text;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.CryptoPro;
 using Org.BouncyCastle.Asn1.X509;
+using Org.BouncyCastle.Cms;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Operators;
 using Org.BouncyCastle.Crypto.Parameters;
@@ -16,12 +17,13 @@ using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Utilities;
 using Org.BouncyCastle.X509;
 using Org.BouncyCastle.X509.Extension;
+using X509Certificate = Org.BouncyCastle.X509.X509Certificate;
 
 namespace CertificateGenerator
 {
     class Program
     {
-        private const string SignatureAlgorithm = "GOST3411withECGOST3410";
+        private const string SignatureAlgorithm = "GOST3411WITHECGOST3410";
         private const string Algorithm = "ECGOST3410";
         // in my case need [B] parameter GostR3410x2001CryptoPro[B]
         private static readonly DerObjectIdentifier PublicKeyParamSet = CryptoProObjectIdentifiers.GostR3410x2001CryptoProB;
@@ -30,9 +32,7 @@ namespace CertificateGenerator
 
         public static void Main()
         {
-            var certificate = GenerateBouncyCastleCertificate();
-            SaveCertificate(certificate);
-
+            GenerateBouncyCastleCertificate();
             var data = "Mary have nuclear bomb";
             var signature = Sign(data); // 64 byte
             /* add signature to request */
@@ -121,7 +121,7 @@ namespace CertificateGenerator
             public Asn1Encodable Value { get; }
         }
 
-        private static X509Certificate2 GenerateBouncyCastleCertificate()
+        private static void GenerateBouncyCastleCertificate()
         {
             var serialNumber = BigIntegers.CreateRandomInRange(BigInteger.One, BigInteger.ValueOf(long.MaxValue), new SecureRandom());
             var date = DateTime.UtcNow.Date;
@@ -145,29 +145,38 @@ namespace CertificateGenerator
 
             var factory = new Asn1SignatureFactory(SignatureAlgorithm, keyPair.Private);
 
-            SavePrivateKey((ECPrivateKeyParameters)keyPair.Private);
-
             var bcCertificate = certificateGenerator.Generate(factory);
 
-            return new X509Certificate2(bcCertificate.GetEncoded(), Password);
+            SavePrivateKey((ECPrivateKeyParameters)keyPair.Private);
+            SaveCertificate(bcCertificate);
+            SaveCmsData(bcCertificate, factory);
         }
 
         #endregion
 
         #region Save
 
-        private static void SaveCertificate(X509Certificate2 certificate)
+        private static void SaveCertificate(X509Certificate bcCertificate)
         {
-            SaveCmsData(certificate);
-
+            var certificate = new X509Certificate2(bcCertificate.GetEncoded(), Password);
             var certificateData = certificate.Export(X509ContentType.Pkcs12, Password);
             File.WriteAllBytes(@"certificate.pfx", certificateData); //save certificate
         }
 
-        private static void SaveCmsData(X509Certificate2 certificate)
+        private static void SaveCmsData(X509Certificate bcCertificate, Asn1SignatureFactory factory)
         {
-            var encodedCertificate = certificate.GetRawCertData();
-            var certificateInBase64 = Convert.ToBase64String(encodedCertificate);
+            var data = bcCertificate.GetEncoded();
+
+            var typedData = new CmsProcessableByteArray(data);
+            var gen = new CmsSignedDataGenerator();
+            var signerInfoGeneratorBuilder = new SignerInfoGeneratorBuilder();
+
+            gen.AddSignerInfoGenerator(signerInfoGeneratorBuilder.Build(factory, bcCertificate));
+
+            var signed = gen.Generate(typedData, true);
+
+            var signedBytes = signed.GetEncoded();
+            var cmsBase64 = Convert.ToBase64String(signedBytes);
 
             /*
              * you can check cert data here - https://lapo.it/asn1js
@@ -178,12 +187,12 @@ namespace CertificateGenerator
             cmsData.Append("-----BEGIN CMS-----");
             cmsData.Append("\\n");
 
-            var certLength = certificateInBase64.Length;
+            var certLength = cmsBase64.Length;
             for (var i = 0; i < certLength; i += 64)
             {
                 var substr = certLength - i >= 64
-                    ? certificateInBase64.Substring(i, 64)
-                    : certificateInBase64.Substring(i);
+                    ? cmsBase64.Substring(i, 64)
+                    : cmsBase64.Substring(i);
 
                 cmsData.Append(substr);
                 cmsData.Append("\\n");
