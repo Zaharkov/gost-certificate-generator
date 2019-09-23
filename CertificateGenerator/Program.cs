@@ -7,24 +7,28 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.CryptoPro;
+using Org.BouncyCastle.Asn1.Pkcs;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Cms;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Operators;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Math;
+using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Utilities;
 using Org.BouncyCastle.X509;
 using Org.BouncyCastle.X509.Extension;
 using X509Certificate = Org.BouncyCastle.X509.X509Certificate;
+using X509Extension = Org.BouncyCastle.Asn1.X509.X509Extension;
 
 namespace CertificateGenerator
 {
     class Program
     {
+        private const string SingingAlgorithm = "GOST3411WITHECGOST3410";
         private const string SignatureAlgorithm = "GOST3411WITHECGOST3410";
-        private const string Algorithm = "ECGOST3410";
+        private const string KeyAlgorithm = "ECGOST3410";
         // in my case need [B] parameter GostR3410x2001CryptoPro[B]
         private static readonly DerObjectIdentifier PublicKeyParamSet = CryptoProObjectIdentifiers.GostR3410x2001CryptoProB;
         private const int CertificateNumber = 1;
@@ -42,7 +46,7 @@ namespace CertificateGenerator
 
         private static AsymmetricCipherKeyPair GetKeyPair()
         {
-            var generator = GeneratorUtilities.GetKeyPairGenerator(Algorithm);
+            var generator = GeneratorUtilities.GetKeyPairGenerator(KeyAlgorithm);
             generator.Init(new ECKeyGenerationParameters(PublicKeyParamSet, new SecureRandom()));
             return generator.GenerateKeyPair();
         }
@@ -90,7 +94,7 @@ namespace CertificateGenerator
             return new X509Name(order, attrs);
         }
 
-        private static IEnumerable<CertificateExtension> GetExtensions(AsymmetricKeyParameter publicKey)
+        private static List<CertificateExtension> GetExtensions(AsymmetricKeyParameter publicKey)
         {
             var extensions = new List<CertificateExtension>();
 
@@ -129,8 +133,6 @@ namespace CertificateGenerator
             var subject = GetSubjectData();
             var attributes = GetExtensions(keyPair.Public);
 
-            //var request = new Pkcs10CertificationRequest(_signatureAlgorithm, subject, keyPair.Public, null, keyPair.Private);
-
             var certificateGenerator = new X509V3CertificateGenerator();
 
             certificateGenerator.SetSerialNumber(serialNumber);
@@ -149,7 +151,20 @@ namespace CertificateGenerator
 
             SavePrivateKey((ECPrivateKeyParameters)keyPair.Private);
             SaveCertificate(bcCertificate);
-            SaveCmsData(bcCertificate, factory);
+
+            IList oids = new ArrayList();
+            IList values = new ArrayList();
+
+            foreach (var attribute in attributes)
+            {
+                oids.Add(attribute.Id);
+                values.Add(new X509Extension(attribute.Critical, new DerOctetString(attribute.Value.GetDerEncoded())));
+            }
+
+            var extensions = new AttributePkcs(PkcsObjectIdentifiers.Pkcs9AtExtensionRequest, new DerSet(new X509Extensions(oids, values)));
+            var request = new Pkcs10CertificationRequest(SignatureAlgorithm, subject, keyPair.Public, new DerSet(extensions), keyPair.Private);
+
+            SaveCmsData(bcCertificate, request, keyPair.Private);
         }
 
         #endregion
@@ -163,13 +178,15 @@ namespace CertificateGenerator
             File.WriteAllBytes(@"certificate.pfx", certificateData); //save certificate
         }
 
-        private static void SaveCmsData(X509Certificate bcCertificate, Asn1SignatureFactory factory)
+        private static void SaveCmsData(X509Certificate bcCertificate, Pkcs10CertificationRequest request, AsymmetricKeyParameter privateKey)
         {
-            var data = bcCertificate.GetEncoded();
+            var requestBytes = request.GetEncoded();
 
-            var typedData = new CmsProcessableByteArray(data);
+            var typedData = new CmsProcessableByteArray(requestBytes);
             var gen = new CmsSignedDataGenerator();
             var signerInfoGeneratorBuilder = new SignerInfoGeneratorBuilder();
+
+            var factory = new Asn1SignatureFactory(SingingAlgorithm, privateKey);
 
             gen.AddSignerInfoGenerator(signerInfoGeneratorBuilder.Build(factory, bcCertificate));
 
@@ -180,7 +197,7 @@ namespace CertificateGenerator
 
             /*
              * you can check cert data here - https://lapo.it/asn1js
-             * just copy+paste certificateInBase64 string
+             * just copy+paste cmsBase64 string
              */
 
             var cmsData = new StringBuilder();
@@ -235,7 +252,7 @@ namespace CertificateGenerator
             var bytes = File.ReadAllBytes(@"private.key");
 
             var key = new BigInteger(bytes);
-            var keyParameters = new ECPrivateKeyParameters(Algorithm, key, PublicKeyParamSet);
+            var keyParameters = new ECPrivateKeyParameters(KeyAlgorithm, key, PublicKeyParamSet);
 
             var signature = SignData(data, keyParameters);
             var parser = new X509CertificateParser();
